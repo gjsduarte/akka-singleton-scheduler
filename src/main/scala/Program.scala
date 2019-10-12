@@ -1,6 +1,8 @@
+import actors.Worker
 import akka.actor._
 import akka.cluster.singleton._
 import akka.cluster.Cluster
+import akka.cluster.pubsub.DistributedPubSub
 import akka.management.cluster.bootstrap.ClusterBootstrap
 import akka.management.scaladsl.AkkaManagement
 import com.typesafe.config.{Config, ConfigFactory}
@@ -23,10 +25,12 @@ abstract class Program(nodeNr: Int) {
   AkkaManagement(system).start() // Akka Management hosts the HTTP routes used by bootstrap
   ClusterBootstrap(system).start() // Starting the bootstrap process needs to be done explicitly
   Cluster(system).registerOnMemberUp {
+    val mediator = DistributedPubSub(system).mediator
+    val worker = system.actorOf(Props(new Worker(mediator)))
     // Scheduler / Master as a singleton actor
     system.actorOf(
       ClusterSingletonManager.props(
-        singletonProps = Props(new actors.Scheduler(jobs)),
+        singletonProps = Props(new actors.Scheduler(jobs, worker.path, mediator)),
         terminationMessage = PoisonPill,
         settings = ClusterSingletonManagerSettings(system)
       )

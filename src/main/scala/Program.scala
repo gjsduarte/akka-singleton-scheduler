@@ -1,52 +1,43 @@
 import akka.actor._
-import akka.pattern._
-import utils.ActorUtils
+import akka.cluster.singleton._
+import akka.cluster.Cluster
+import akka.management.cluster.bootstrap.ClusterBootstrap
+import akka.management.scaladsl.AkkaManagement
+import com.typesafe.config.{Config, ConfigFactory}
+import model.Job
 
 import scala.concurrent.duration._
 
-case class Job(name: String, interval: FiniteDuration, timeout: FiniteDuration)
+// Nodes
+object Node1 extends Program(1) with App
+object Node2 extends Program(2) with App
 
-object Program {
+abstract class Program(nodeNr: Int) {
 
   private val jobs = Seq(
     Job("1SecJob", 1.second, 2.seconds),
     Job("10SecJob", 10.second, 2.seconds)
   )
 
-  def main(args: Array[String]): Unit = {
-    val system: ActorSystem = ActorSystem("task-scheduler")
-    system.actorOf(Props(new Scheduler(jobs)))
+  val system = ActorSystem("task-scheduler", configure(nodeNr))
+  AkkaManagement(system).start() // Akka Management hosts the HTTP routes used by bootstrap
+  ClusterBootstrap(system).start() // Starting the bootstrap process needs to be done explicitly
+  Cluster(system).registerOnMemberUp {
+    // Scheduler / Master as a singleton actor
+    system.actorOf(
+      ClusterSingletonManager.props(
+        singletonProps = Props(new actors.Scheduler(jobs)),
+        terminationMessage = PoisonPill,
+        settings = ClusterSingletonManagerSettings(system)
+      )
+    )
+  }
+
+  private def configure(nr: Int): Config = {
+    ConfigFactory.parseString(s"""
+      akka.remote.artery.canonical.hostname = "127.0.0.$nr"
+      akka.management.http.hostname = "127.0.0.$nr"
+    """).withFallback(ConfigFactory.load())
   }
 }
 
-class Scheduler(jobs: Seq[Job]) extends Actor with ActorUtils {
-
-  private val worker = context.system.actorOf(Props(new Worker))
-
-  override def preStart(): Unit = jobs.foreach(schedule)
-
-  def receive: Receive = {
-    case job: Job =>
-      log(s"Executing job ${job.name}")
-      ask(worker, job)(job.timeout)
-        .map(_ => log(s"Job ${job.name} executed successfully!"))
-        .recover { case e: AskTimeoutException => log(s"Error executing job ${job.name}: $e") }
-        .andThen { case _ => schedule(job) } // send another periodic tick after the specified delay
-  }
-
-  private def schedule(job: Job): Unit = {
-    log(s"Scheduling job ${job.name}")
-    context.system.scheduler.scheduleOnce(job.interval, self, job)
-  }
-}
-
-class Worker extends Actor with ActorUtils {
-
-  def receive: Receive = {
-    case job:Job => withTimeout(job.timeout) {
-      log(s"Executing job ${job.name}")
-      sleep(job.timeout) // This is where we actually execute the task
-      log(s"Finished executing job ${job.name}")
-    }.pipeTo(sender)
-  }
-}

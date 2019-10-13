@@ -1,12 +1,6 @@
-import actors.Worker
-import akka.actor._
-import akka.cluster.singleton._
-import akka.cluster.Cluster
-import akka.cluster.pubsub.DistributedPubSub
-import akka.management.cluster.bootstrap.ClusterBootstrap
-import akka.management.scaladsl.AkkaManagement
-import com.typesafe.config.{Config, ConfigFactory}
-import model.Job
+import com.typesafe.config._
+import jobs.SleepJob
+import scheduling.JobScheduler
 
 import scala.concurrent.duration._
 
@@ -16,26 +10,10 @@ object Node2 extends Program(2) with App
 
 abstract class Program(nodeNr: Int) {
 
-  private val jobs = Seq(
-    Job("1SecJob", 1.second, 2.seconds),
-    Job("10SecJob", 10.second, 2.seconds)
-  )
-
-  val system = ActorSystem("task-scheduler", configure(nodeNr))
-  AkkaManagement(system).start() // Akka Management hosts the HTTP routes used by bootstrap
-  ClusterBootstrap(system).start() // Starting the bootstrap process needs to be done explicitly
-  Cluster(system).registerOnMemberUp {
-    val mediator = DistributedPubSub(system).mediator
-    val worker = system.actorOf(Props(new Worker(mediator)))
-    // Scheduler / Master as a singleton actor
-    system.actorOf(
-      ClusterSingletonManager.props(
-        singletonProps = Props(new actors.Scheduler(jobs, worker.path, mediator)),
-        terminationMessage = PoisonPill,
-        settings = ClusterSingletonManagerSettings(system)
-      )
-    )
-  }
+  new JobScheduler(configure(nodeNr))(
+    new SleepJob("1SecJob", 1.second, 2.seconds),
+    new SleepJob("10SecJob", 10.second, 2.seconds)
+  ).initialize()
 
   private def configure(nr: Int): Config = {
     ConfigFactory.parseString(s"""
@@ -44,4 +22,3 @@ abstract class Program(nodeNr: Int) {
     """).withFallback(ConfigFactory.load())
   }
 }
-

@@ -5,34 +5,31 @@ import java.time.LocalDateTime._
 import akka.actor.Actor
 import akka.pattern.after
 
-import scala.concurrent.{ExecutionContext, Future, TimeoutException}
+import scala.concurrent._
 import scala.concurrent.duration.FiniteDuration
-
-import scala.util.Random
 
 trait ActorUtils { this: Actor =>
 
-  implicit protected val executionContext: ExecutionContext = context.dispatcher
-
-  private val random = new Random()
+  implicit protected val executor: ExecutionContext = context.dispatcher
 
   protected def log(msg: String): Unit = {
-    println(s"$now: [${getClass.getSimpleName}] $msg")
+    println(Console.GREEN + format(msg))
   }
 
-  protected def sleep(duration: FiniteDuration): Unit = {
-    val millis = duration.toMillis.toInt
-    val sleep = random.nextInt(millis) // + (millis / 2) // <-- This will make it sleep 50% longer
-    Thread.sleep(sleep)
+  protected def log(msg: String, exception: Throwable): Unit = {
+    println(Console.RED + format(msg) + s": ${exception.getClass.getSimpleName}")
   }
 
-  protected def withTimeout[T](timeout: FiniteDuration)(action: => T): Future[T] =
-    withTimeoutF(timeout)(Future(action))
-
-  protected def withTimeoutF[T](timeout: FiniteDuration)(future: => Future[T]): Future[T] = {
-    Future.firstCompletedOf(Seq(future, after(timeout, context.system.scheduler) {
-      Future.failed(new TimeoutException("Task execution timeout"))
-    }))
+  protected def withTimeout[T](timeout: FiniteDuration)(future: CancellationToken => Future[T]): Future[T] = {
+    val token = new CancellationTokenSource()
+    Future.firstCompletedOf { Seq(
+      future(token), // The real action
+      after(timeout, context.system.scheduler) { // Timeout with cancellation token
+        token.cancel()
+        Future.failed(new TimeoutException("Task execution timeout"))
+      })
+    }
   }
 
+  private def format(msg: String) = s"$now: [${getClass.getSimpleName}] $msg"
 }
